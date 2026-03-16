@@ -87,6 +87,8 @@ export async function fetchAppStorePage(
 ): Promise<{ appPrice: string; inAppPurchases: InAppPurchase[] }> {
   const url = `https://apps.apple.com/${country}/app/id${trackId}`;
 
+  console.log('url', url)
+
   try {
     const res = await fetch(url, {
       headers: {
@@ -105,7 +107,7 @@ export async function fetchAppStorePage(
     const html = await res.text();
     return parseAppStorePage(html);
   } catch (error) {
-    console.error(`Failed to fetch App Store page for ${country}:`, error);
+    console.error(`Failed to fetch App Store page for ${country}:`, error instanceof Error ? `${error.name}: ${error.message}\n${error.stack}` : error);
     return { appPrice: "N/A", inAppPurchases: [] };
   }
 }
@@ -125,7 +127,7 @@ function parseAppStorePage(html: string): {
 
   // 方法1: 从 JSON-LD 结构化数据中提取
   const jsonLdScripts = $('script[type="application/ld+json"]');
-  jsonLdScripts.each((_, el) => {
+  jsonLdScripts.each((_: any, el: any) => {
     try {
       const data = JSON.parse($(el).text());
       if (data.offers && data.offers.price !== undefined) {
@@ -155,38 +157,17 @@ function parseAppStorePage(html: string): {
   // 提取内购项目
   const inAppPurchases: InAppPurchase[] = [];
 
-  // App Store 页面上的内购列表通常在 "In-App Purchases" / "App 内购买" 区域
-  // 选择器可能随 Apple 页面更新变化
-  $('[class*="in-app-purchase"], [class*="iap"]').each((_, el) => {
-    const name = $(el).find('[class*="name"], [class*="title"]').first().text().trim();
-    const price = $(el).find('[class*="price"]').first().text().trim();
-    if (name && price) {
-      inAppPurchases.push({ name, price });
-    }
-  });
-
-  // 备用: 查找包含内购信息的列表区域
+  // 直接用 div.text-pair 选择器提取内购项
   if (inAppPurchases.length === 0) {
-    // 尝试匹配 "Top In-App Purchases" 区域下的列表
-    const sections = $("section, div");
-    sections.each((_, section) => {
-      const heading = $(section).find("h2, h3").first().text().trim().toLowerCase();
-      if (
-        heading.includes("in-app purchase") ||
-        heading.includes("app 内购买项目") ||
-        heading.includes("app内购买")
-      ) {
-        $(section)
-          .find("li, [role='listitem']")
-          .each((_, li) => {
-            const texts = $(li).text().trim().split("\n").map((t) => t.trim()).filter(Boolean);
-            if (texts.length >= 2) {
-              inAppPurchases.push({
-                name: texts[0],
-                price: texts[texts.length - 1],
-              });
-            }
-          });
+    $("div.text-pair").each((_: any, pair: any) => {
+      const spans = $(pair).find("span");
+      if (spans.length >= 2) {
+        const name = $(spans[0]).text().trim();
+        const price = $(spans[1]).text().trim();
+        // 用价格正则过滤非内购项
+        if (name && price && /[\d$¥€£₩]/.test(price)) {
+          inAppPurchases.push({ name, price });
+        }
       }
     });
   }

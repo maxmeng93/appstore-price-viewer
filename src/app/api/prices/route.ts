@@ -24,9 +24,11 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const regionCodes = regionsParam
-    ? regionsParam.split(",").map((s) => s.trim().toLowerCase())
-    : DEFAULT_REGIONS;
+  const regionCodes = (
+    regionsParam
+      ? regionsParam.split(",").map((s) => s.trim().toLowerCase())
+      : DEFAULT_REGIONS
+  ).slice(0, 15);
 
   try {
     // 获取 App 基本信息

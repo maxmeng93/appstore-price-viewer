@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
+import { useLocale } from "@/lib/i18n";
 import type { AppInfo } from "@/lib/types";
 
 interface SearchBarProps {
@@ -8,11 +9,12 @@ interface SearchBarProps {
 }
 
 export default function SearchBar({ onSelect }: SearchBarProps) {
+  const { t } = useLocale();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<AppInfo[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const containerRef = useRef<HTMLDivElement>(null);
 
   // 点击外部关闭下拉
@@ -89,7 +91,7 @@ export default function SearchBar({ onSelect }: SearchBarProps) {
           value={query}
           onChange={(e) => handleInput(e.target.value)}
           onFocus={() => results.length > 0 && setShowDropdown(true)}
-          placeholder="搜索 App 名称或 ID..."
+          placeholder={t("search.placeholder")}
           className="flex-1 bg-transparent outline-none text-base"
           style={{ color: "var(--color-text)" }}
         />
@@ -144,23 +146,6 @@ export default function SearchBar({ onSelect }: SearchBarProps) {
               >
                 {app.formattedPrice || "Free"}
               </div>
-              <a
-                href={`https://apps.apple.com/app/id${app.trackId}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={(e) => e.stopPropagation()}
-                className="ml-2 p-1 rounded transition-colors"
-                style={{ color: "var(--color-text-secondary)" }}
-                onMouseEnter={(e) => (e.currentTarget.style.color = "var(--color-accent)")}
-                onMouseLeave={(e) => (e.currentTarget.style.color = "var(--color-text-secondary)")}
-                title="在 App Store 中查看"
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-                  <polyline points="15 3 21 3 21 9" />
-                  <line x1="10" y1="14" x2="21" y2="3" />
-                </svg>
-              </a>
             </button>
           ))}
         </div>

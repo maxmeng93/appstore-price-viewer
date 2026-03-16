@@ -1,29 +1,88 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import SearchBar from "@/components/SearchBar";
+import RegionSelector from "@/components/RegionSelector";
 import PriceTable from "@/components/PriceTable";
+import { DEFAULT_REGIONS } from "@/lib/regions";
+import { detectLocale, LocaleContext, t, LOCALE_LABELS, type Locale } from "@/lib/i18n";
 import type { AppInfo, RegionPrice } from "@/lib/types";
+
+const STORAGE_KEY = "selectedRegions";
 
 export default function Home() {
   const [selectedApp, setSelectedApp] = useState<AppInfo | null>(null);
   const [prices, setPrices] = useState<RegionPrice[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [selectedRegions, setSelectedRegions] = useState<string[]>(DEFAULT_REGIONS);
+  const [locale, setLocale] = useState<Locale>("en");
+  const [showUSD, setShowUSD] = useState(false);
+  const [exchangeRates, setExchangeRates] = useState<Record<string, number> | null>(null);
+  const initializedRef = useRef(false);
 
-  const handleSelectApp = async (app: AppInfo) => {
-    setSelectedApp(app);
+  // 检测语言（优先 sessionStorage）+ 从 localStorage 恢复地区选择 + 读取 URL 中的 trackId
+  useEffect(() => {
+    const saved = sessionStorage.getItem("appLocale") as Locale | null;
+    const initial = (saved && saved in LOCALE_LABELS) ? saved : detectLocale();
+    setLocale(initial);
+    document.documentElement.lang = initial;
+    let regions = DEFAULT_REGIONS;
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          regions = parsed;
+          setSelectedRegions(parsed);
+        }
+      }
+    } catch {}
+    initializedRef.current = true;
+
+    // 从 URL 读取 trackId，自动加载价格数据
+    const urlParams = new URLSearchParams(window.location.search);
+    const trackId = urlParams.get("id");
+    if (trackId) {
+      setIsLoading(true);
+      fetch(`/api/prices?trackId=${trackId}&regions=${regions.join(",")}`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (!data.error && data.app) {
+            setSelectedApp(data.app);
+            setPrices(data.prices || []);
+          }
+        })
+        .catch((err) => console.error("Failed to load app from URL:", err))
+        .finally(() => setIsLoading(false));
+    }
+  }, []);
+
+  // 切换语言
+  const handleLocaleChange = (newLocale: Locale) => {
+    setLocale(newLocale);
+    sessionStorage.setItem("appLocale", newLocale);
+    document.documentElement.lang = newLocale;
+  };
+
+  const handleRegionsChange = (codes: string[]) => {
+    setSelectedRegions(codes);
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(codes));
+    } catch {}
+  };
+
+  const fetchPrices = async (app: AppInfo, regions: string[]) => {
     setPrices([]);
     setIsLoading(true);
-
     try {
-      const res = await fetch(`/api/prices?trackId=${app.trackId}`);
+      const res = await fetch(
+        `/api/prices?trackId=${app.trackId}&regions=${regions.join(",")}`
+      );
       const data = await res.json();
-
       if (data.error) {
         console.error(data.error);
         return;
       }
-
       setSelectedApp(data.app || app);
       setPrices(data.prices || []);
     } catch (err) {
@@ -33,7 +92,84 @@ export default function Home() {
     }
   };
 
+  const handleSelectApp = (app: AppInfo) => {
+    setSelectedApp(app);
+    fetchPrices(app, selectedRegions);
+    // 将 trackId 写入 URL，支持分享链接
+    const url = new URL(window.location.href);
+    url.searchParams.set("id", String(app.trackId));
+    window.history.replaceState({}, "", url.toString());
+  };
+
+  // USD 开关开启时获取汇率
+  const handleToggleUSD = (value: boolean) => {
+    setShowUSD(value);
+    if (value && !exchangeRates) {
+      fetch("/api/exchange-rates")
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.rates) setExchangeRates(data.rates);
+        })
+        .catch((err) => console.error("Failed to fetch exchange rates:", err));
+    }
+  };
+
+  // 地区变化时，如果已有选中 App，自动重新查询
+  const prevRegionsRef = useRef(selectedRegions);
+  useEffect(() => {
+    if (!initializedRef.current) return;
+    if (
+      selectedApp &&
+      JSON.stringify(prevRegionsRef.current) !== JSON.stringify(selectedRegions)
+    ) {
+      fetchPrices(selectedApp, selectedRegions);
+    }
+    prevRegionsRef.current = selectedRegions;
+  }, [selectedRegions, selectedApp]);
+
+  const suggestedApps: Record<Locale, string[]> = {
+    zh: ["微信", "Notion", "Procreate", "1Password", "Bear"],
+    en: ["WhatsApp", "Notion", "Procreate", "1Password", "Bear"],
+    ja: ["LINE", "Notion", "Procreate", "1Password", "Bear"],
+    ko: ["KakaoTalk", "Notion", "Procreate", "1Password", "Bear"],
+    ru: ["Telegram", "Notion", "Procreate", "1Password", "Bear"],
+  };
+
   return (
+    <LocaleContext.Provider value={locale}>
+    {/* 语言切换控件 + GitHub 链接 */}
+    <div className="fixed top-4 right-4 z-50 flex items-center gap-3">
+      {/* GitHub 链接 */}
+      <a
+        href="https://github.com/maxmeng93/app-store-price-viewer"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="flex items-center justify-center w-8 h-8 rounded-lg transition-colors duration-150"
+        style={{ border: "1px solid var(--color-border)", background: "var(--color-surface)", color: "var(--color-text-secondary)" }}
+        onMouseEnter={(e) => { e.currentTarget.style.color = "var(--color-text)"; }}
+        onMouseLeave={(e) => { e.currentTarget.style.color = "var(--color-text-secondary)"; }}
+      >
+        <svg viewBox="0 0 16 16" width="18" height="18" fill="currentColor">
+          <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
+        </svg>
+      </a>
+      {/* 语言切换按钮组 */}
+      <div className="flex rounded-lg overflow-hidden" style={{ border: "1px solid var(--color-border)", background: "var(--color-surface)" }}>
+        {(Object.keys(LOCALE_LABELS) as Locale[]).map((loc) => (
+          <button
+            key={loc}
+            onClick={() => handleLocaleChange(loc)}
+            className="px-3 py-1.5 text-sm font-medium transition-colors duration-150"
+            style={{
+              background: locale === loc ? "var(--color-accent)" : "transparent",
+              color: locale === loc ? "#fff" : "var(--color-text-secondary)",
+            }}
+          >
+            {LOCALE_LABELS[loc]}
+          </button>
+        ))}
+      </div>
+    </div>
     <main className="min-h-screen px-4 py-16 md:py-24">
       {/* Header */}
       <div className="text-center mb-12">
@@ -59,12 +195,18 @@ export default function Home() {
           App Store Price Viewer
         </h1>
         <p className="text-lg" style={{ color: "var(--color-text-secondary)" }}>
-          查询 App Store 应用在全球各地区的价格和内购信息
+          {t(locale, "subtitle")}
         </p>
       </div>
 
       {/* 搜索栏 */}
       <SearchBar onSelect={handleSelectApp} />
+
+      {/* 地区选择器 */}
+      <RegionSelector
+        selectedCodes={selectedRegions}
+        onChange={handleRegionsChange}
+      />
 
       {/* 价格表格 */}
       {(isLoading || selectedApp) && (
@@ -72,6 +214,9 @@ export default function Home() {
           app={selectedApp!}
           prices={prices}
           isLoading={isLoading}
+          showUSD={showUSD}
+          exchangeRates={exchangeRates}
+          onToggleUSD={handleToggleUSD}
         />
       )}
 
@@ -80,17 +225,16 @@ export default function Home() {
         <div className="text-center mt-20">
           <div className="text-6xl mb-6 opacity-30">🔍</div>
           <p style={{ color: "var(--color-text-secondary)" }}>
-            搜索任意 App，查看全球各地区的价格对比
+            {t(locale, "empty.hint")}
           </p>
           <div
             className="flex flex-wrap justify-center gap-2 mt-6 max-w-lg mx-auto"
           >
-            {["微信", "Notion", "Procreate", "1Password", "Bear"].map(
+            {suggestedApps[locale].map(
               (name) => (
                 <button
                   key={name}
                   onClick={() => {
-                    // 触发搜索
                     const input = document.querySelector("input");
                     if (input) {
                       const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
@@ -99,7 +243,6 @@ export default function Home() {
                       )?.set;
                       nativeInputValueSetter?.call(input, name);
                       input.dispatchEvent(new Event("input", { bubbles: true }));
-                      // 或者手动触发 onChange
                       input.dispatchEvent(new Event("change", { bubbles: true }));
                     }
                   }}
@@ -126,5 +269,6 @@ export default function Home() {
         </div>
       )}
     </main>
+    </LocaleContext.Provider>
   );
 }
