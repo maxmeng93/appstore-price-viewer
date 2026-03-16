@@ -3,6 +3,7 @@ services:
     build: .
     ports:
       - "${PORT:-3000}:3000"
-    env_file:
-      - .env
+    environment:
+      - UPSTASH_REDIS_REST_URL=${UPSTASH_REDIS_REST_URL:-}
+      - UPSTASH_REDIS_REST_TOKEN=${UPSTASH_REDIS_REST_TOKEN:-}
     restart: unless-stopped
