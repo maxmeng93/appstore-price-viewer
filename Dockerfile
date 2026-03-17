@@ -41,8 +41,15 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 # 创建缓存数据目录并赋权给 nextjs 用户
 RUN mkdir -p /app/data && chown nextjs:nodejs /app/data
 
-USER nextjs
+# 启动入口：先以 root 修复挂载卷权限，再切换到 nextjs 用户运行
+COPY --chmod=755 <<'EOF' /app/entrypoint.sh
+#!/bin/sh
+chown -R nextjs:nodejs /app/data 2>/dev/null || true
+exec su-exec nextjs node server.js
+EOF
+
+RUN apk add --no-cache su-exec
 
 EXPOSE 3000
 
-CMD ["node", "server.js"]
+ENTRYPOINT ["/app/entrypoint.sh"]
