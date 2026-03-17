@@ -41,3 +41,51 @@ export interface PriceResponse {
   app: AppInfo;
   prices: RegionPrice[];
 }
+
+/** 缓存的 App 信息 */
+export interface CachedAppInfo extends AppInfo {
+  source: "api" | "scraper"; // 数据来源
+  updatedAt: string;          // ISO 时间戳
+}
+
+/** 缓存的地区价格 */
+export interface CachedRegionPrice extends RegionPrice {
+  crawledAt: string; // 爬取时间 ISO 时间戳
+}
+
+/** apps.json 文件结构 */
+export interface AppsFileData {
+  version: 1;
+  updatedAt: string;
+  apps: Record<string, CachedAppInfo>;
+}
+
+/** prices.json 文件结构 */
+export interface PricesFileData {
+  version: 1;
+  updatedAt: string;
+  prices: Record<string, CachedRegionPrice>;
+}
+
+/** exchange-rates.json 文件结构 */
+export interface ExchangeRatesFileData {
+  version: 1;
+  rates: Record<string, number>;
+  updatedAt: string;
+}
+
+/** App 查看次数统计 */
+export interface AppViewCount {
+  trackId: number;
+  trackName: string;
+  artworkUrl512: string;
+  count: number;        // 查看次数
+  lastViewedAt: string; // 最后查看时间 ISO
+}
+
+/** views.json 文件结构 */
+export interface ViewsFileData {
+  version: 1;
+  updatedAt: string;
+  views: Record<string, AppViewCount>; // key 为 trackId
+}

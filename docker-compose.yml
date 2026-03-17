@@ -4,6 +4,7 @@ services:
     ports:
       - "${PORT:-3000}:3000"
     environment:
-      - UPSTASH_REDIS_REST_URL=${UPSTASH_REDIS_REST_URL:-}
-      - UPSTASH_REDIS_REST_TOKEN=${UPSTASH_REDIS_REST_TOKEN:-}
+      - DATA_DIR=/app/data
+    volumes:
+      - ./data:/app/data
     restart: unless-stopped

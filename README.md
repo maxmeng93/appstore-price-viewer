@@ -12,13 +12,14 @@
 - 🌐 5 种语言界面（中文 / English / 日本語 / 한국어 / Русский）
 - 🌙 深色主题 UI
 - 🔗 URL 分享（选中 App 后可直接分享链接）
-- ⚡ Upstash Redis 缓存（价格 7 天，汇率 24 小时），未配置时降级为内存缓存
+- 🔥 热门推荐（基于查看次数动态推荐 App）
+- 📦 本地 JSON 文件缓存（价格 7 天，汇率 1 小时），零外部依赖
 
 ## 技术栈
 
 - **Next.js 15** (App Router) + React 19 + TypeScript 5
 - **Tailwind CSS v4** — CSS-first 配置
-- **Upstash Redis** 缓存（可选）
+- **本地 JSON 文件缓存**（`./data/` 目录）
 - **Cheerio** 解析 App Store 页面
 - **iTunes Search / Lookup API** 数据源
 
@@ -33,8 +34,8 @@
 
 ```bash
 # 克隆仓库
-git clone https://github.com/yogo/appstore-price-viewer.git
-cd appstore-price-viewer
+git clone https://github.com/maxmeng93/app-store-price-viewer.git
+cd app-store-price-viewer
 
 # 安装依赖
 pnpm install
@@ -45,16 +46,15 @@ pnpm dev
 
 打开 http://localhost:3000 即可使用。
 
-> 未配置 Upstash Redis 环境变量时，缓存自动降级为内存模式（进程重启后清空）。
+> 缓存数据存储在 `./data/` 目录下，包括 App 信息、价格和查看统计。可通过 `DATA_DIR` 环境变量自定义路径。
 
 ## 部署
 
 标准 Next.js 应用，可部署到任何支持 Node.js 的平台（Vercel、Docker、自托管等）。
 
-如需启用 Redis 缓存，配置以下环境变量（见 `.env.example`）：
+环境变量（见 `.env.example`）：
 
-- `UPSTASH_REDIS_REST_URL`
-- `UPSTASH_REDIS_REST_TOKEN`
+- `DATA_DIR` — 缓存数据目录，默认 `./data`
 
 ### Docker 部署
 
@@ -64,10 +64,10 @@ docker compose up -d
 
 # 或手动构建运行
 docker build -t appstore-price-viewer .
-docker run -p 3000:3000 --env-file .env appstore-price-viewer
+docker run -p 3000:3000 -v ./data:/app/data appstore-price-viewer
 ```
 
-> 使用 `docker compose` 时，环境变量从项目根目录的 `.env` 文件读取。
+> Docker 部署时，`./data` 目录映射到容器内 `/app/data`，确保缓存数据持久化。
 
 ## 架构
 
@@ -75,16 +75,21 @@ docker run -p 3000:3000 --env-file .env appstore-price-viewer
 
 ```
 用户搜索 App
-  → /api/search → iTunes Search API → 返回搜索结果
-  → 用户选择 App
-  → /api/prices → 并发查询多个地区
-    → Redis/内存缓存命中 → 直接返回
+  → /api/search → iTunes Search API（失败时三级降级：本地缓存匹配 → Cheerio 爬虫）
+  → 返回搜索结果
+  → 用户选择 App（或点击热门推荐）
+  → /api/prices → 记录查看次数 + 并发查询多个地区
+    → 本地文件缓存命中（7 天内）→ 直接返回
     → 缓存未命中 → iTunes Lookup API + App Store 页面抓取
       → Cheerio 解析内购价格
-      → 写入缓存 (价格 TTL 7d)
+      → 写入缓存
       → 返回前端
-  → /api/exchange-rates → 获取 USD 汇率
+  → /api/exchange-rates → 获取 USD 汇率（内存缓存 1 小时）
   → 前端展示价格对比表
+
+首页推荐
+  → /api/popular → 按查看次数排序返回热门 App
+  → 前端展示：top 2 + 随机 3 个
 ```
 
 ### 目录结构
@@ -95,7 +100,8 @@ src/
 │   ├── api/
 │   │   ├── search/route.ts         # App 搜索接口
 │   │   ├── prices/route.ts         # 多地区价格查询接口
-│   │   └── exchange-rates/route.ts # USD 汇率接口
+│   │   ├── exchange-rates/route.ts # USD 汇率接口
+│   │   └── popular/route.ts        # 热门 App 接口
 │   ├── globals.css                 # 全局样式 + CSS 变量
 │   ├── layout.tsx                  # 根布局
 │   └── page.tsx                    # 首页（顶层状态管理）
@@ -105,7 +111,7 @@ src/
 │   └── RegionSelector.tsx          # 地区选择器
 └── lib/
     ├── appstore.ts                 # App Store 数据抓取核心逻辑
-    ├── cache.ts                    # Redis / 内存缓存工具
+    ├── cache.ts                    # 本地 JSON 文件缓存
     ├── currency.ts                 # 价格解析与 USD 换算
     ├── i18n.ts                     # 国际化（5 种语言）
     ├── regions.ts                  # 国家/地区配置（100+）
@@ -116,7 +122,7 @@ src/
 
 - **API 限制**: iTunes Search API 频率限制约 20 次/分钟/IP
 - **页面解析**: App Store 页面结构可能随 Apple 更新而变化，内购解析选择器需定期维护
-- **缓存**: 价格缓存 7 天，汇率缓存 24 小时，价格变动会有延迟
+- **缓存**: 价格缓存 7 天，汇率内存缓存 1 小时，价格变动会有延迟
 
 ## 贡献
 

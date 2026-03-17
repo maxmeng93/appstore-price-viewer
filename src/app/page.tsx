@@ -6,7 +6,7 @@ import RegionSelector from "@/components/RegionSelector";
 import PriceTable from "@/components/PriceTable";
 import { DEFAULT_REGIONS } from "@/lib/regions";
 import { detectLocale, LocaleContext, t, LOCALE_LABELS, type Locale } from "@/lib/i18n";
-import type { AppInfo, RegionPrice } from "@/lib/types";
+import type { AppInfo, RegionPrice, AppViewCount } from "@/lib/types";
 
 const STORAGE_KEY = "selectedRegions";
 
@@ -18,6 +18,7 @@ export default function Home() {
   const [locale, setLocale] = useState<Locale>("en");
   const [showUSD, setShowUSD] = useState(false);
   const [exchangeRates, setExchangeRates] = useState<Record<string, number> | null>(null);
+  const [popularApps, setPopularApps] = useState<AppViewCount[]>([]);
   const initializedRef = useRef(false);
 
   // 检测语言（优先 sessionStorage）+ 从 localStorage 恢复地区选择 + 读取 URL 中的 trackId
@@ -39,12 +40,32 @@ export default function Home() {
     } catch {}
     initializedRef.current = true;
 
+    // 获取热门 App 列表
+    fetch("/api/popular?limit=20")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.apps) setPopularApps(data.apps);
+      })
+      .catch((err) => console.error("Failed to fetch popular apps:", err));
+
     // 从 URL 读取 trackId，自动加载价格数据
     const urlParams = new URLSearchParams(window.location.search);
     const trackId = urlParams.get("id");
     if (trackId) {
+      // 尝试从 sessionStorage 恢复缓存的 AppInfo
+      let cachedApp: AppInfo | null = null;
+      try {
+        const cached = sessionStorage.getItem(`appInfo_${trackId}`);
+        if (cached) cachedApp = JSON.parse(cached);
+      } catch {}
+
+      let url = `/api/prices?trackId=${trackId}&regions=${regions.join(",")}`;
+      if (cachedApp) {
+        url += `&trackName=${encodeURIComponent(cachedApp.trackName)}&artworkUrl512=${encodeURIComponent(cachedApp.artworkUrl512)}`;
+      }
+
       setIsLoading(true);
-      fetch(`/api/prices?trackId=${trackId}&regions=${regions.join(",")}`)
+      fetch(url)
         .then((res) => res.json())
         .then((data) => {
           if (!data.error && data.app) {
@@ -76,7 +97,7 @@ export default function Home() {
     setIsLoading(true);
     try {
       const res = await fetch(
-        `/api/prices?trackId=${app.trackId}&regions=${regions.join(",")}`
+        `/api/prices?trackId=${app.trackId}&regions=${regions.join(",")}&trackName=${encodeURIComponent(app.trackName)}&artworkUrl512=${encodeURIComponent(app.artworkUrl512)}`
       );
       const data = await res.json();
       if (data.error) {
@@ -94,6 +115,10 @@ export default function Home() {
 
   const handleSelectApp = (app: AppInfo) => {
     setSelectedApp(app);
+    // 缓存到 sessionStorage，页面刷新时可恢复
+    try {
+      sessionStorage.setItem(`appInfo_${app.trackId}`, JSON.stringify(app));
+    } catch {}
     fetchPrices(app, selectedRegions);
     // 将 trackId 写入 URL，支持分享链接
     const url = new URL(window.location.href);
@@ -127,12 +152,36 @@ export default function Home() {
     prevRegionsRef.current = selectedRegions;
   }, [selectedRegions, selectedApp]);
 
-  const suggestedApps: Record<Locale, string[]> = {
+  const fallbackApps: Record<Locale, string[]> = {
     zh: ["微信", "Notion", "Procreate", "1Password", "Bear"],
     en: ["WhatsApp", "Notion", "Procreate", "1Password", "Bear"],
     ja: ["LINE", "Notion", "Procreate", "1Password", "Bear"],
     ko: ["KakaoTalk", "Notion", "Procreate", "1Password", "Bear"],
     ru: ["Telegram", "Notion", "Procreate", "1Password", "Bear"],
+  };
+
+  type SuggestedItem =
+    | { type: "popular"; app: AppViewCount }
+    | { type: "fallback"; name: string };
+
+  const getSuggestedApps = (): SuggestedItem[] => {
+    if (popularApps.length >= 5) {
+      const top2 = popularApps.slice(0, 2);
+      const rest = popularApps.slice(2);
+      const shuffled = [...rest].sort(() => Math.random() - 0.5);
+      const random3 = shuffled.slice(0, 3);
+      return [...top2, ...random3].map((app) => ({ type: "popular", app }));
+    }
+    if (popularApps.length > 0) {
+      const items: SuggestedItem[] = popularApps.map((app) => ({ type: "popular", app }));
+      const usedNames = new Set(popularApps.map((a) => a.trackName));
+      for (const name of fallbackApps[locale]) {
+        if (items.length >= 5) break;
+        if (!usedNames.has(name)) items.push({ type: "fallback", name });
+      }
+      return items;
+    }
+    return fallbackApps[locale].map((name) => ({ type: "fallback", name }));
   };
 
   return (
@@ -230,10 +279,51 @@ export default function Home() {
           <div
             className="flex flex-wrap justify-center gap-2 mt-6 max-w-lg mx-auto"
           >
-            {suggestedApps[locale].map(
-              (name) => (
+            {getSuggestedApps().map((item) =>
+              item.type === "popular" ? (
                 <button
-                  key={name}
+                  key={item.app.trackId}
+                  onClick={() =>
+                    handleSelectApp({
+                      trackId: item.app.trackId,
+                      trackName: item.app.trackName,
+                      artworkUrl512: item.app.artworkUrl512,
+                      bundleId: "",
+                      sellerName: "",
+                      primaryGenreName: "",
+                      price: 0,
+                      currency: "USD",
+                      formattedPrice: "",
+                    })
+                  }
+                  className="flex items-center gap-2 px-4 py-2 rounded-full text-sm transition-colors duration-150"
+                  style={{
+                    background: "var(--color-surface)",
+                    border: "1px solid var(--color-border)",
+                    color: "var(--color-text-secondary)",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.borderColor = "var(--color-accent)";
+                    e.currentTarget.style.color = "var(--color-accent)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.borderColor = "var(--color-border)";
+                    e.currentTarget.style.color = "var(--color-text-secondary)";
+                  }}
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={item.app.artworkUrl512}
+                    alt={item.app.trackName}
+                    width={16}
+                    height={16}
+                    className="rounded"
+                  />
+                  {item.app.trackName}
+                </button>
+              ) : (
+                <button
+                  key={item.name}
                   onClick={() => {
                     const input = document.querySelector("input");
                     if (input) {
@@ -241,7 +331,7 @@ export default function Home() {
                         window.HTMLInputElement.prototype,
                         "value"
                       )?.set;
-                      nativeInputValueSetter?.call(input, name);
+                      nativeInputValueSetter?.call(input, item.name);
                       input.dispatchEvent(new Event("input", { bubbles: true }));
                       input.dispatchEvent(new Event("change", { bubbles: true }));
                     }
@@ -261,7 +351,7 @@ export default function Home() {
                     e.currentTarget.style.color = "var(--color-text-secondary)";
                   }}
                 >
-                  {name}
+                  {item.name}
                 </button>
               )
             )}

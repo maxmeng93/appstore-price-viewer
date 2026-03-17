@@ -12,13 +12,14 @@ Search iOS apps and compare prices across 100+ countries/regions worldwide, with
 - 🌐 5 language UI (中文 / English / 日本語 / 한국어 / Русский)
 - 🌙 Dark theme UI
 - 🔗 URL sharing (share a direct link to any app's price comparison)
-- ⚡ Upstash Redis caching (prices 7d, exchange rates 24h), falls back to in-memory cache when unconfigured
+- 🔥 Popular recommendations (dynamically recommended based on view count)
+- 📦 Local JSON file caching (prices 7d, exchange rates 1h), zero external dependencies
 
 ## Tech Stack
 
 - **Next.js 15** (App Router) + React 19 + TypeScript 5
 - **Tailwind CSS v4** — CSS-first configuration
-- **Upstash Redis** caching (optional)
+- **Local JSON file caching** (`./data/` directory)
 - **Cheerio** for App Store page parsing
 - **iTunes Search / Lookup API** as data source
 
@@ -33,8 +34,8 @@ Search iOS apps and compare prices across 100+ countries/regions worldwide, with
 
 ```bash
 # Clone the repository
-git clone https://github.com/yogo/appstore-price-viewer.git
-cd appstore-price-viewer
+git clone https://github.com/maxmeng93/app-store-price-viewer.git
+cd app-store-price-viewer
 
 # Install dependencies
 pnpm install
@@ -45,16 +46,15 @@ pnpm dev
 
 Open http://localhost:3000 to use the app.
 
-> When Upstash Redis environment variables are not configured, caching falls back to in-memory mode (cleared on process restart).
+> Cache data is stored in the `./data/` directory, including app info, prices, and view statistics. Customize the path via the `DATA_DIR` environment variable.
 
 ## Deployment
 
 Standard Next.js application — deploy to any Node.js-compatible platform (Vercel, Docker, self-hosted, etc.).
 
-To enable Redis caching, set the following environment variables (see `.env.example`):
+Environment variables (see `.env.example`):
 
-- `UPSTASH_REDIS_REST_URL`
-- `UPSTASH_REDIS_REST_TOKEN`
+- `DATA_DIR` — Cache data directory, defaults to `./data`
 
 ### Docker Deployment
 
@@ -64,10 +64,10 @@ docker compose up -d
 
 # Or build and run manually
 docker build -t appstore-price-viewer .
-docker run -p 3000:3000 --env-file .env appstore-price-viewer
+docker run -p 3000:3000 -v ./data:/app/data appstore-price-viewer
 ```
 
-> When using `docker compose`, environment variables are read from the `.env` file in the project root.
+> When using Docker, the `./data` directory is mapped to `/app/data` inside the container to persist cache data.
 
 ## Architecture
 
@@ -75,16 +75,21 @@ docker run -p 3000:3000 --env-file .env appstore-price-viewer
 
 ```
 User searches for an app
-  → /api/search → iTunes Search API → Returns search results
-  → User selects an app
-  → /api/prices → Concurrent queries across multiple regions
-    → Redis/memory cache hit → Return directly
+  → /api/search → iTunes Search API (falls back to local cache search → Cheerio scraper on failure)
+  → Returns search results
+  → User selects an app (or clicks a popular recommendation)
+  → /api/prices → Records view count + concurrent queries across multiple regions
+    → Local file cache hit (within 7 days) → Return directly
     → Cache miss → iTunes Lookup API + App Store page scraping
       → Cheerio parses IAP prices
-      → Write to cache (price TTL 7d)
+      → Write to cache
       → Return to frontend
-  → /api/exchange-rates → Fetch USD exchange rates
+  → /api/exchange-rates → Fetch USD exchange rates (in-memory cache, 1h)
   → Frontend displays price comparison table
+
+Homepage recommendations
+  → /api/popular → Returns apps sorted by view count
+  → Frontend displays: top 2 + 3 random picks
 ```
 
 ### Directory Structure
@@ -95,7 +100,8 @@ src/
 │   ├── api/
 │   │   ├── search/route.ts         # App search endpoint
 │   │   ├── prices/route.ts         # Multi-region price query endpoint
-│   │   └── exchange-rates/route.ts # USD exchange rate endpoint
+│   │   ├── exchange-rates/route.ts # USD exchange rate endpoint
+│   │   └── popular/route.ts        # Popular apps endpoint
 │   ├── globals.css                 # Global styles + CSS variables
 │   ├── layout.tsx                  # Root layout
 │   └── page.tsx                    # Home page (top-level state management)
@@ -105,7 +111,7 @@ src/
 │   └── RegionSelector.tsx          # Region selector
 └── lib/
     ├── appstore.ts                 # App Store data scraping core logic
-    ├── cache.ts                    # Redis / in-memory cache utilities
+    ├── cache.ts                    # Local JSON file caching
     ├── currency.ts                 # Price parsing & USD conversion
     ├── i18n.ts                     # Internationalization (5 languages)
     ├── regions.ts                  # Country/region config (100+)
@@ -116,7 +122,7 @@ src/
 
 - **API Rate Limits**: iTunes Search API is limited to ~20 requests/minute/IP
 - **Page Parsing**: App Store page structure may change with Apple updates; IAP parsing selectors need periodic maintenance
-- **Caching**: Prices cached for 7 days, exchange rates for 24 hours; price changes may be delayed
+- **Caching**: Prices cached for 7 days, exchange rates cached in memory for 1 hour; price changes may be delayed
 
 ## Contributing
 

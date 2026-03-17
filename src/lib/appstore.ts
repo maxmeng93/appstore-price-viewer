@@ -1,47 +1,140 @@
 import * as cheerio from "cheerio";
 import type { AppInfo, InAppPurchase, RegionPrice, SearchResult } from "./types";
 import { REGIONS } from "./regions";
+import { setAppInfo, setAppInfoBatch, getAppInfo, searchAppsInCache } from "./cache";
 
 /**
- * 通过 iTunes Search API 搜索 App
+ * 通过爬取 App Store 搜索页面获取搜索结果（降级方案）
+ */
+async function searchAppsByScraping(
+  term: string,
+  country: string = "us",
+  limit: number = 10
+): Promise<SearchResult> {
+  const url = `https://apps.apple.com/${country}/iphone/search?term=${encodeURIComponent(term)}`;
+
+  const res = await fetch(url, {
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
+      "Accept-Language": "en-US,en;q=0.9",
+      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    },
+  });
+
+  if (!res.ok) {
+    throw new Error(`App Store 搜索页面请求失败: ${res.status}`);
+  }
+
+  const html = await res.text();
+  const $ = cheerio.load(html);
+
+  const results: SearchResult["results"] = [];
+
+  $("section[data-test-id='shelf-wrapper'] ul li > a").each((_: any, el: any) => {
+    if (results.length >= limit) return false;
+
+    const $el = $(el);
+    const href = $el.attr("href") || "";
+    const idMatch = href.match(/id(\d+)$/);
+    if (!idMatch) return;
+
+    const trackId = Number(idMatch[1]);
+    const trackName = $el.find("h3").text().trim();
+
+    // 从 picture source 获取图标 URL，替换尺寸为 512x512
+    let artworkUrl512 = "";
+    const srcset = $el.find(".app-icon picture source[type='image/webp']").attr("srcset") || "";
+    if (srcset) {
+      const firstUrl = srcset.split(",")[0].trim().split(" ")[0];
+      artworkUrl512 = firstUrl.replace(/\d+x\d+[^.]*\.webp/, "512x512bb-75.webp");
+    }
+
+    results.push({
+      trackId,
+      trackName,
+      bundleId: "",
+      artworkUrl512,
+      sellerName: "",
+      primaryGenreName: "",
+      price: 0,
+      currency: "",
+      formattedPrice: "",
+    });
+  });
+
+  return {
+    resultCount: results.length,
+    results,
+  };
+}
+
+/**
+ * 通过 iTunes Search API 搜索 App，失败时降级为爬取 App Store 搜索页面
  */
 export async function searchApps(
   term: string,
   country: string = "us",
   limit: number = 10
 ): Promise<SearchResult> {
-  const url = new URL("https://itunes.apple.com/search");
-  url.searchParams.set("term", term);
-  url.searchParams.set("country", country);
-  url.searchParams.set("entity", "software");
-  url.searchParams.set("limit", String(limit));
+  try {
+    const url = new URL("https://itunes.apple.com/search");
+    url.searchParams.set("term", term);
+    url.searchParams.set("country", country);
+    url.searchParams.set("entity", "software");
+    url.searchParams.set("limit", String(limit));
 
-  const res = await fetch(url.toString(), {
-    headers: { "User-Agent": "AppStorePriceViewer/1.0" },
-  });
+    const res = await fetch(url.toString(), {
+      headers: { "User-Agent": "AppStorePriceViewer/1.0" },
+    });
 
-  if (!res.ok) {
-    throw new Error(`iTunes Search API error: ${res.status}`);
+    if (!res.ok) {
+      console.warn(`iTunes Search API 返回 ${res.status}，降级为缓存/爬虫搜索`);
+      // 先查本地缓存
+      const cached = searchAppsInCache(term, limit);
+      if (cached.length > 0) {
+        return { resultCount: cached.length, results: cached };
+      }
+      // 缓存无结果，降级爬虫
+      return searchAppsByScraping(term, country, limit);
+    }
+
+    const data = await res.json();
+
+    const result: SearchResult = {
+      resultCount: data.resultCount,
+      results: data.results.map((r: Record<string, unknown>) => ({
+        trackId: r.trackId,
+        trackName: r.trackName,
+        bundleId: r.bundleId,
+        artworkUrl512: (r.artworkUrl512 as string) || (r.artworkUrl100 as string),
+        sellerName: r.sellerName,
+        primaryGenreName: r.primaryGenreName,
+        price: r.price,
+        currency: r.currency,
+        formattedPrice: r.formattedPrice,
+        averageUserRating: r.averageUserRating,
+        userRatingCount: r.userRatingCount,
+      })),
+    };
+
+    // 缓存 API 返回的 App 信息
+    setAppInfoBatch(result.results, "api");
+
+    return result;
+  } catch (error) {
+    console.warn("iTunes Search API 调用失败，降级为缓存/爬虫搜索:", error instanceof Error ? error.message : error);
+    // 先查本地缓存
+    const cached = searchAppsInCache(term, limit);
+    if (cached.length > 0) {
+      return { resultCount: cached.length, results: cached };
+    }
+    // 缓存无结果，降级爬虫
+    const scraperResult = await searchAppsByScraping(term, country, limit);
+    // 缓存爬虫返回的 App 信息
+    setAppInfoBatch(scraperResult.results, "scraper");
+    return scraperResult;
   }
-
-  const data = await res.json();
-
-  return {
-    resultCount: data.resultCount,
-    results: data.results.map((r: Record<string, unknown>) => ({
-      trackId: r.trackId,
-      trackName: r.trackName,
-      bundleId: r.bundleId,
-      artworkUrl512: (r.artworkUrl512 as string) || (r.artworkUrl100 as string),
-      sellerName: r.sellerName,
-      primaryGenreName: r.primaryGenreName,
-      price: r.price,
-      currency: r.currency,
-      formattedPrice: r.formattedPrice,
-      averageUserRating: r.averageUserRating,
-      userRatingCount: r.userRatingCount,
-    })),
-  };
 }
 
 /**
@@ -56,13 +149,21 @@ export async function lookupApp(
     headers: { "User-Agent": "AppStorePriceViewer/1.0" },
   });
 
-  if (!res.ok) return null;
+  if (!res.ok) {
+    // API 失败时尝试从缓存读取
+    const cached = getAppInfo(trackId);
+    if (cached) {
+      console.log(`[appstore] lookupApp(${trackId}) API 失败，使用缓存数据`);
+      return cached;
+    }
+    return null;
+  }
 
   const data = await res.json();
   if (data.resultCount === 0) return null;
 
   const r = data.results[0];
-  return {
+  const app: AppInfo = {
     trackId: r.trackId,
     trackName: r.trackName,
     bundleId: r.bundleId,
@@ -75,6 +176,11 @@ export async function lookupApp(
     averageUserRating: r.averageUserRating,
     userRatingCount: r.userRatingCount,
   };
+
+  // 缓存 API 返回的 App 信息
+  setAppInfo(trackId, app, "api");
+
+  return app;
 }
 
 /**
@@ -86,8 +192,6 @@ export async function fetchAppStorePage(
   country: string
 ): Promise<{ appPrice: string; inAppPurchases: InAppPurchase[] }> {
   const url = `https://apps.apple.com/${country}/app/id${trackId}`;
-
-  console.log('url', url)
 
   try {
     const res = await fetch(url, {

@@ -21,28 +21,40 @@ pnpm start          # 启动生产服务器
 
 - **Next.js 15** (App Router) + **React 19** + **TypeScript 5**
 - **Tailwind CSS v4** — CSS-first 配置，无 `tailwind.config` 文件，通过 `globals.css` 中 `@import "tailwindcss"` 引入
-- **Upstash Redis** 缓存（价格 7 天，汇率 24 小时），未配置时降级为内存缓存
+- **本地 JSON 文件缓存**（App 信息 + 价格 + 查看统计持久化到 `./data/`，汇率仅内存缓存 1 小时）
 - **Cheerio** 解析 App Store HTML 页面提取内购价格
 
 ## 环境变量
 
-见 `.env.example`。Upstash Redis 为可选配置，不配置时自动降级为进程内内存缓存（重启清空）。
+见 `.env.example`。`DATA_DIR` 可配置缓存数据目录，默认 `./data`。
 
 ## 架构要点
 
 ### 数据流
 
-搜索词 → `/api/search` → iTunes Search API → 前端下拉选择 → `/api/prices` → 对每个地区并发: Redis/内存缓存 → iTunes Lookup API + App Store 页面抓取(Cheerio) → 返回价格对比数据
+搜索词 → `/api/search` → iTunes Search API（失败三级降级: 本地缓存匹配 → Cheerio 爬虫） → 前端下拉选择 → `/api/prices` → 对每个地区并发: 本地文件/内存缓存 → iTunes Lookup API + App Store 页面抓取(Cheerio) → 返回价格对比数据
 
 ### API 路由
 
-- `GET /api/search?term=xxx&country=us` — 搜索 App，最多 8 条结果
-- `GET /api/prices?trackId=xxx&regions=cn,us,...` — 查询多地区价格，最多 15 个地区；响应包含 `app`（AppInfo）和 `prices`（RegionPrice[]）
-- `GET /api/exchange-rates` — 获取 USD 汇率（来源 open.er-api.com），非阻塞写入 Redis 缓存
+- `GET /api/search?term=xxx&country=us` — 搜索 App，最多 8 条结果；iTunes API 失败时先查本地缓存（`searchAppsInCache` 按 trackName/bundleId 模糊匹配），缓存无结果再降级为爬取 `apps.apple.com` 搜索页
+- `GET /api/prices?trackId=xxx&regions=cn,us,...` — 查询多地区价格，最多 15 个地区；可选参数 `trackName`、`artworkUrl512` 作为备份；自动调用 `incrementAppView()` 计入查看次数
+- `GET /api/exchange-rates` — 获取 USD 汇率（来源 open.er-api.com），内存缓存 1 小时
+- `GET /api/popular?limit=20` — 返回按查看次数排序的热门 App 列表（默认 20 条，上限 50），数据来源 `views.json`
+
+### 缓存策略 (`src/lib/cache.ts`)
+
+三层缓存文件（`data/` 目录下）：
+- `apps.json` — App 基本信息，永不过期；爬虫数据不覆盖 API 数据（质量控制）
+- `prices.json` — 地区价格，7 天过期；key 格式 `${trackId}:${regionCode}`
+- `views.json` — App 查看次数统计，永不过期
+
+启动时加载文件到内存 Map，定时 10 分钟 + 进程退出时 flush 到磁盘（原子写入：先 `.tmp` 再 `rename`）。
+
+`searchAppsInCache()` 提供基于 `trackName`/`bundleId` 的模糊搜索，用于搜索 API 失败时的快速降级。
 
 ### URL 分享机制
 
-选中 App 后 URL 会写入 `?id=<trackId>`（通过 `replaceState`），页面加载时读取此参数自动调用 `/api/prices` 加载数据，支持链接分享。
+选中 App 后 URL 写入 `?id=<trackId>`（`replaceState`），同时将 AppInfo 缓存到 `sessionStorage`。页面加载时读取 URL 参数自动恢复数据，支持链接分享。
 
 ### App Store 页面解析策略 (`src/lib/appstore.ts`)
 
@@ -52,13 +64,20 @@ pnpm start          # 启动生产服务器
 
 Apple 可能随时更新页面结构，解析选择器需定期维护。
 
+### 热门推荐系统
+
+- `/api/prices` 每次请求自动 `incrementAppView()` 累计查看次数
+- 首页 empty state 调用 `/api/popular` 获取热门列表
+- 展示逻辑（`getSuggestedApps()`）：≥5 条热门数据时取 top 2 + 随机 3；不足时用语言相关的 `fallbackApps` 硬编码列表补齐
+- 热门 App 点击直接调用 `handleSelectApp()` 加载价格（不走搜索），fallback 则填入搜索框触发搜索
+
 ### i18n 国际化 (`src/lib/i18n.ts`)
 
 - 支持 5 种语言: zh / en / ja / ko / ru
 - 硬编码翻译字典 `messages`，每语言 19 个 key
 - `detectLocale()` 依据 `navigator.language` 检测，语言选择存 `sessionStorage`
 - `LocaleContext` + `useLocale()` Hook 向组件传递 locale 和 `t()` 翻译函数
-- **新增语言时需同步修改**: `Locale` 类型、`messages` 字典、`LOCALE_LABELS`、`detectLocale()`、`regions.ts` 的 `getRegionName()` switch、`page.tsx` 的 `suggestedApps`
+- **新增语言时需同步修改**: `Locale` 类型、`messages` 字典、`LOCALE_LABELS`、`detectLocale()`、`regions.ts` 的 `getRegionName()` switch、`page.tsx` 的 `fallbackApps`
 
 ### 货币解析 (`src/lib/currency.ts`)
 
@@ -69,7 +88,7 @@ Apple 可能随时更新页面结构，解析选择器需定期维护。
 
 - 地区选择 → `localStorage` (key: `selectedRegions`)
 - 语言选择 → `sessionStorage` (key: `appLocale`)
-- 选中 App → URL search param `?id=<trackId>`
+- 选中 App → URL search param `?id=<trackId>` + `sessionStorage` (key: `appInfo_<trackId>`)
 
 ### 关键约束
 

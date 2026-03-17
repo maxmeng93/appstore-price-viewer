@@ -38,6 +38,9 @@ COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
+# 创建缓存数据目录并赋权给 nextjs 用户
+RUN mkdir -p /app/data && chown nextjs:nodejs /app/data
+
 USER nextjs
 
 EXPOSE 3000
